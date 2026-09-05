@@ -2,7 +2,6 @@ import express from "express";
 import openid from "openid";
 
 const { RelyingParty } = openid;
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 const RETURN_URL = process.env.STEAM_RETURN_URL || "https://refinex-backend-7i0n.onrender.com/auth/steam/return";
@@ -11,9 +10,14 @@ const STOCK_LIMIT = 300;
 const TF2_APP_ID = 440;
 const TF2_CONTEXT_ID = 2;
 const DEFAULT_STOCK_STEAM_ID = "76561199526105710";
+const STOCK_REFRESH_MS = 10 * 60 * 1000;
 
 app.use(express.json());
 const deposits = new Map();
+let stockCache = null;
+let stockLastUpdated = 0;
+let stockRefreshPromise = null;
+
 const createRelyingParty = () => new RelyingParty(RETURN_URL, null, true, false, []);
 
 app.get("/", (req, res) => res.json({ name: "Refinex.tf2 API", status: "online" }));
@@ -40,9 +44,7 @@ app.get("/auth/steam/return", (req, res) => {
             const nameMatch = xml.match(/<steamID><!\[CDATA\[(.*?)\]\]><\/steamID>/);
             if (avatarMatch) avatar = avatarMatch[1];
             if (nameMatch) personaName = nameMatch[1];
-        } catch (profileError) {
-            console.error("Steam profile lookup error:", profileError);
-        }
+        } catch (profileError) { console.error("Steam profile lookup error:", profileError); }
         const redirectUrl = new URL(FRONTEND_URL);
         redirectUrl.searchParams.set("steamId", steamId);
         redirectUrl.searchParams.set("login", "success");
@@ -52,35 +54,25 @@ app.get("/auth/steam/return", (req, res) => {
     });
 });
 
-async function fetchSteamInventory(stockSteamId) {
+async function fetchSteamStock() {
+    const stockSteamId = String(process.env.STEAM_STOCK_ID || DEFAULT_STOCK_STEAM_ID).trim();
+    if (!/^\d{5,20}$/.test(stockSteamId)) throw new Error("Invalid stock Steam ID");
     const url = `https://steamcommunity.com/inventory/${stockSteamId}/${TF2_APP_ID}/${TF2_CONTEXT_ID}?l=english&count=5000`;
     const response = await fetch(url, {
         headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Referer": "https://steamcommunity.com/"
+            "User-Agent": "Mozilla/5.0 (compatible; Refinex.tf2/1.3)",
+            "Accept": "application/json,text/plain,*/*"
         }
     });
     const bodyText = await response.text();
-    let data = null;
-    try { data = JSON.parse(bodyText); } catch {}
-    return { url, response, bodyText, data };
-}
-
-async function readSteamStock() {
-    const stockSteamId = String(process.env.STEAM_STOCK_ID || DEFAULT_STOCK_STEAM_ID).trim();
-    if (!/^\d{5,20}$/.test(stockSteamId)) throw new Error("Invalid stock Steam ID");
-
-    const { url, response, bodyText, data } = await fetchSteamInventory(stockSteamId);
+    let data;
+    try { data = JSON.parse(bodyText); } catch { throw new Error(`Steam returned non-JSON response (HTTP ${response.status})`); }
     if (!response.ok) {
-        const safeBody = bodyText.replace(/\s+/g, " ").slice(0, 500);
         const error = new Error(`Steam inventory HTTP ${response.status}`);
-        error.status = response.status;
-        error.steamResponse = safeBody;
-        error.url = url;
+        error.steamStatus = response.status;
+        error.steamResponse = bodyText.slice(0, 1000);
         throw error;
     }
-    if (!data) throw new Error(`Steam returned non-JSON response (HTTP ${response.status})`);
     if (Number(data.success) !== 1) throw new Error(`Steam inventory returned success=${data.success}`);
 
     const descriptions = new Map();
@@ -105,11 +97,11 @@ async function readSteamStock() {
         matched.push({ assetid: String(asset.assetid || ""), amount: count, name: itemName, market_hash_name: marketHashName });
     }
 
+    const limited = Math.max(0, Math.min(STOCK_LIMIT, refined));
     return {
-        stock: Math.max(0, Math.min(STOCK_LIMIT, refined)),
-        refined: Math.max(0, Math.min(STOCK_LIMIT, refined)),
+        stock: limited,
+        refined: limited,
         limit: STOCK_LIMIT,
-        source: "steam_inventory",
         steamId: stockSteamId,
         httpStatus: response.status,
         success: data.success,
@@ -124,37 +116,40 @@ async function readSteamStock() {
     };
 }
 
+async function refreshStock(force = false) {
+    const fresh = Date.now() - stockLastUpdated < STOCK_REFRESH_MS;
+    if (!force && fresh && stockCache) return stockCache;
+    if (stockRefreshPromise) return stockRefreshPromise;
+
+    stockRefreshPromise = fetchSteamStock().then(result => {
+        stockCache = result;
+        stockLastUpdated = Date.now();
+        return result;
+    }).catch(error => {
+        if (stockCache) return { ...stockCache, stale: true, refreshError: error.message };
+        throw error;
+    }).finally(() => { stockRefreshPromise = null; });
+
+    return stockRefreshPromise;
+}
+
 app.get("/api/stock", async (req, res) => {
     try {
-        res.json(await readSteamStock());
+        const result = await refreshStock(false);
+        res.json({ ...result, cached: true, lastUpdated: stockLastUpdated, nextRefreshInMs: Math.max(0, STOCK_REFRESH_MS - (Date.now() - stockLastUpdated)) });
     } catch (error) {
         console.error("Steam stock lookup error:", error);
-        res.status(502).json({
-            stock: 0,
-            refined: 0,
-            limit: STOCK_LIMIT,
-            source: "steam_inventory",
-            error: error.message,
-            steamStatus: error.status || null,
-            steamResponse: error.steamResponse || null
-        });
+        res.status(502).json({ stock: 0, refined: 0, limit: STOCK_LIMIT, source: "steam_inventory", error: error.message, steamStatus: error.steamStatus || null, steamResponse: error.steamResponse || null });
     }
 });
 
 app.get("/api/stock/debug", async (req, res) => {
-    const stockSteamId = String(process.env.STEAM_STOCK_ID || DEFAULT_STOCK_STEAM_ID).trim();
     try {
-        res.json({ ok: true, ...await readSteamStock() });
+        const result = await refreshStock(false);
+        res.json({ ok: true, ...result, cached: true, lastUpdated: stockLastUpdated, nextRefreshInMs: Math.max(0, STOCK_REFRESH_MS - (Date.now() - stockLastUpdated)) });
     } catch (error) {
         console.error("Steam stock debug error:", error);
-        res.status(502).json({
-            ok: false,
-            error: error.message,
-            steamStatus: error.status || null,
-            steamResponse: error.steamResponse || null,
-            steamId: stockSteamId,
-            steamInventoryUrl: error.url || `https://steamcommunity.com/inventory/${stockSteamId}/${TF2_APP_ID}/${TF2_CONTEXT_ID}?l=english&count=5000`
-        });
+        res.status(502).json({ ok: false, error: error.message, steamStatus: error.steamStatus || null, steamResponse: error.steamResponse || null, steamId: String(process.env.STEAM_STOCK_ID || DEFAULT_STOCK_STEAM_ID).trim() });
     }
 });
 
