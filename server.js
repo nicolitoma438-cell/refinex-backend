@@ -13,10 +13,17 @@ const DEFAULT_STOCK_STEAM_ID = "76561199526105710";
 const DEFAULT_STOCK = 5;
 const STOCK_REFRESH_MS = 10 * 60 * 1000;
 
+app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", FRONTEND_URL);
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (req.method === "OPTIONS") return res.sendStatus(204);
+    next();
+});
 app.use(express.json());
 const deposits = new Map();
 let stockCache = { stock: DEFAULT_STOCK, refined: DEFAULT_STOCK, limit: STOCK_LIMIT, source: "manual_fallback" };
-let stockLastUpdated = Date.now();
+let stockLastUpdated = 0;
 let stockRefreshPromise = null;
 
 const createRelyingParty = () => new RelyingParty(RETURN_URL, null, true, false, []);
@@ -82,12 +89,12 @@ async function fetchSteamStock() {
         refined += Number.isFinite(amount) && amount > 0 ? amount : 1;
     }
     const limited = Math.max(0, Math.min(STOCK_LIMIT, refined));
-    return { stock: limited, refined: limited, limit: STOCK_LIMIT, source: "steam_inventory", steamId: stockSteamId };
+    return { stock: limited, refined: limited, limit: STOCK_LIMIT, source: "steam_inventory", steamId: stockSteamId, steamStatus: 200 };
 }
 
 async function refreshStock() {
     const age = Date.now() - stockLastUpdated;
-    if (age < STOCK_REFRESH_MS) return stockCache;
+    if (stockLastUpdated > 0 && age < STOCK_REFRESH_MS) return stockCache;
     if (stockRefreshPromise) return stockRefreshPromise;
     stockRefreshPromise = fetchSteamStock().then(result => {
         stockCache = result;
@@ -95,7 +102,9 @@ async function refreshStock() {
         return result;
     }).catch(error => {
         console.error("Steam stock refresh failed:", error.message);
-        return { ...stockCache, stale: true, refreshError: error.message, steamStatus: error.steamStatus || null };
+        stockLastUpdated = Date.now();
+        stockCache = { ...stockCache, stale: true, refreshError: error.message, steamStatus: error.steamStatus || null };
+        return stockCache;
     }).finally(() => { stockRefreshPromise = null; });
     return stockRefreshPromise;
 }
