@@ -11,6 +11,8 @@ const STOCK_LIMIT = 300;
 
 app.use(express.json());
 
+const deposits = new Map();
+
 const createRelyingParty = () => new RelyingParty(
     RETURN_URL,
     null,
@@ -81,15 +83,69 @@ app.get("/api/stock", (req, res) => {
     const refined = Math.max(0, Math.min(STOCK_LIMIT, Number(process.env.STOCK_REFINED) || 0));
 
     res.json({
+        stock: refined,
         refined,
         limit: STOCK_LIMIT
     });
 });
 
-app.get("/api/deposit/status", (req, res) => {
-    res.json({
+app.post("/api/deposit/create", (req, res) => {
+    const steamId = String(req.body?.steamId || "").trim();
+    const amount = Math.floor(Number(req.body?.amount) || 0);
+
+    if (!/^\d{5,20}$/.test(steamId)) {
+        return res.status(400).json({ error: "Valid Steam ID is required." });
+    }
+
+    if (amount < 1 || amount > STOCK_LIMIT) {
+        return res.status(400).json({ error: `Deposit amount must be between 1 and ${STOCK_LIMIT}.` });
+    }
+
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const request = {
+        requestId,
+        steamId,
+        amount,
         status: "pending",
-        refined: 0
+        refined: 0,
+        createdAt: new Date().toISOString()
+    };
+
+    deposits.set(requestId, request);
+
+    res.status(201).json({
+        requestId,
+        status: request.status,
+        amount: request.amount
+    });
+});
+
+app.get("/api/deposit/status", (req, res) => {
+    const requestId = String(req.query?.requestId || "").trim();
+
+    if (!requestId) {
+        return res.json({
+            status: "pending",
+            refined: 0,
+            message: "No deposit request ID supplied."
+        });
+    }
+
+    const request = deposits.get(requestId);
+
+    if (!request) {
+        return res.status(404).json({
+            status: "not_found",
+            refined: 0
+        });
+    }
+
+    res.json({
+        requestId: request.requestId,
+        status: request.status,
+        refined: request.status === "verified" ? request.amount : 0,
+        amount: request.amount,
+        createdAt: request.createdAt
     });
 });
 
