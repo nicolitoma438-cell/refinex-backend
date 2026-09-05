@@ -26,31 +26,22 @@ const createRelyingParty = () => new RelyingParty(
 );
 
 app.get("/", (req, res) => {
-    res.json({
-        name: "Refinex.tf2 API",
-        status: "online"
-    });
+    res.json({ name: "Refinex.tf2 API", status: "online" });
 });
 
 app.get("/auth/steam", (req, res) => {
     const relyingParty = createRelyingParty();
-
-    relyingParty.authenticate(
-        "https://steamcommunity.com/openid",
-        false,
-        (error, authUrl) => {
-            if (error || !authUrl) {
-                console.error("Steam authentication error:", error);
-                return res.status(500).send("Steam Login error");
-            }
-            res.redirect(authUrl);
+    relyingParty.authenticate("https://steamcommunity.com/openid", false, (error, authUrl) => {
+        if (error || !authUrl) {
+            console.error("Steam authentication error:", error);
+            return res.status(500).send("Steam Login error");
         }
-    );
+        res.redirect(authUrl);
+    });
 });
 
 app.get("/auth/steam/return", (req, res) => {
     const relyingParty = createRelyingParty();
-
     relyingParty.verifyAssertion(req, async (error, result) => {
         if (error || !result?.authenticated || !result.claimedIdentifier) {
             console.error("Steam verification error:", error);
@@ -77,7 +68,6 @@ app.get("/auth/steam/return", (req, res) => {
         redirectUrl.searchParams.set("login", "success");
         redirectUrl.searchParams.set("avatar", avatar);
         redirectUrl.searchParams.set("personaName", personaName);
-
         res.redirect(redirectUrl.toString());
     });
 });
@@ -86,26 +76,22 @@ app.get("/api/stock", async (req, res) => {
     const stockSteamId = String(process.env.STEAM_STOCK_ID || DEFAULT_STOCK_STEAM_ID).trim();
 
     if (!/^\d{5,20}$/.test(stockSteamId)) {
-        return res.json({ stock: 0, refined: 0, limit: STOCK_LIMIT, source: "steam_inventory", configured: false });
+        return res.status(500).json({ stock: 0, refined: 0, limit: STOCK_LIMIT, source: "steam_inventory", configured: false, error: "Invalid stock Steam ID" });
     }
 
     try {
         const url = `https://steamcommunity.com/inventory/${stockSteamId}/${TF2_APP_ID}/${TF2_CONTEXT_ID}?l=english&count=5000`;
         const response = await fetch(url, {
             headers: {
-                "User-Agent": "Mozilla/5.0 Refinex.tf2 stock reader",
+                "User-Agent": "Refinex.tf2 stock reader/1.0",
                 "Accept": "application/json"
             }
         });
 
-        if (!response.ok) {
-            throw new Error(`Steam inventory HTTP ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`Steam inventory HTTP ${response.status}`);
 
         const data = await response.json();
-        if (Number(data.success) !== 1 && data.success !== true) {
-            throw new Error("Steam inventory returned success=0");
-        }
+        if (Number(data.success) !== 1) throw new Error(`Steam inventory returned success=${data.success}`);
 
         const descriptions = new Map();
         for (const description of data.descriptions || []) {
@@ -114,17 +100,25 @@ app.get("/api/stock", async (req, res) => {
         }
 
         let refined = 0;
+        let matchedAssets = 0;
 
         for (const asset of data.assets || []) {
             const key = `${asset.classid}_${asset.instanceid || "0"}`;
             const description = descriptions.get(key);
             const marketHashName = String(description?.market_hash_name || "").trim();
             const itemName = String(description?.name || "").trim();
+            const defIndex = String(description?.commodity || "") === "1" ? Number(description?.classid) : Number(description?.defindex ?? description?.item_definition_index);
 
-            if (marketHashName === "Refined Metal" || itemName === "Refined Metal") {
-                const amount = Number.parseInt(String(asset.amount ?? "1"), 10);
-                refined += Number.isFinite(amount) && amount > 0 ? amount : 1;
-            }
+            const isRefined =
+                marketHashName === "Refined Metal" ||
+                itemName === "Refined Metal" ||
+                defIndex === REFINED_DEF_INDEX;
+
+            if (!isRefined) continue;
+
+            matchedAssets += 1;
+            const amount = Number(asset.amount);
+            refined += Number.isFinite(amount) && amount > 0 ? amount : 1;
         }
 
         refined = Math.max(0, Math.min(STOCK_LIMIT, refined));
@@ -135,7 +129,8 @@ app.get("/api/stock", async (req, res) => {
             limit: STOCK_LIMIT,
             source: "steam_inventory",
             configured: true,
-            steamId: stockSteamId
+            steamId: stockSteamId,
+            matchedAssets
         });
     } catch (error) {
         console.error("Steam stock lookup error:", error);
@@ -145,6 +140,7 @@ app.get("/api/stock", async (req, res) => {
             limit: STOCK_LIMIT,
             source: "steam_inventory",
             configured: true,
+            steamId: stockSteamId,
             error: "Steam inventory unavailable"
         });
     }
@@ -154,45 +150,22 @@ app.post("/api/deposit/create", (req, res) => {
     const steamId = String(req.body?.steamId || "").trim();
     const amount = Math.floor(Number(req.body?.amount) || 0);
 
-    if (!/^\d{5,20}$/.test(steamId)) {
-        return res.status(400).json({ error: "Valid Steam ID is required." });
-    }
-
-    if (amount < 1 || amount > STOCK_LIMIT) {
-        return res.status(400).json({ error: `Deposit amount must be between 1 and ${STOCK_LIMIT}.` });
-    }
+    if (!/^\d{5,20}$/.test(steamId)) return res.status(400).json({ error: "Valid Steam ID is required." });
+    if (amount < 1 || amount > STOCK_LIMIT) return res.status(400).json({ error: `Deposit amount must be between 1 and ${STOCK_LIMIT}.` });
 
     const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const request = {
-        requestId,
-        steamId,
-        amount,
-        status: "pending",
-        refined: 0,
-        createdAt: new Date().toISOString()
-    };
-
+    const request = { requestId, steamId, amount, status: "pending", refined: 0, createdAt: new Date().toISOString() };
     deposits.set(requestId, request);
 
-    res.status(201).json({
-        requestId,
-        status: request.status,
-        amount: request.amount
-    });
+    res.status(201).json({ requestId, status: request.status, amount: request.amount });
 });
 
 app.get("/api/deposit/status", (req, res) => {
     const requestId = String(req.query?.requestId || "").trim();
-
-    if (!requestId) {
-        return res.json({ status: "pending", refined: 0, message: "No deposit request ID supplied." });
-    }
+    if (!requestId) return res.json({ status: "pending", refined: 0, message: "No deposit request ID supplied." });
 
     const request = deposits.get(requestId);
-
-    if (!request) {
-        return res.status(404).json({ status: "not_found", refined: 0 });
-    }
+    if (!request) return res.status(404).json({ status: "not_found", refined: 0 });
 
     res.json({
         requestId: request.requestId,
