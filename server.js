@@ -8,6 +8,9 @@ const PORT = process.env.PORT || 3000;
 const RETURN_URL = process.env.STEAM_RETURN_URL || "https://refinex-backend-7i0n.onrender.com/auth/steam/return";
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://refinex-tf2.onrender.com";
 const STOCK_LIMIT = 300;
+const TF2_APP_ID = 440;
+const TF2_CONTEXT_ID = 2;
+const REFINED_DEF_INDEX = 5000;
 
 app.use(express.json());
 
@@ -79,14 +82,69 @@ app.get("/auth/steam/return", (req, res) => {
     });
 });
 
-app.get("/api/stock", (req, res) => {
-    const refined = Math.max(0, Math.min(STOCK_LIMIT, Number(process.env.STOCK_REFINED) || 0));
+app.get("/api/stock", async (req, res) => {
+    const stockSteamId = String(process.env.STEAM_STOCK_ID || "").trim();
 
-    res.json({
-        stock: refined,
-        refined,
-        limit: STOCK_LIMIT
-    });
+    if (!/^\d{5,20}$/.test(stockSteamId)) {
+        return res.json({
+            stock: 0,
+            refined: 0,
+            limit: STOCK_LIMIT,
+            source: "steam_inventory",
+            configured: false
+        });
+    }
+
+    try {
+        const url = `https://steamcommunity.com/inventory/${stockSteamId}/${TF2_APP_ID}/${TF2_CONTEXT_ID}?l=english&count=5000`;
+        const response = await fetch(url, {
+            headers: { "User-Agent": "Refinex.tf2 stock reader" }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Steam inventory HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        const descriptions = new Map();
+
+        for (const description of data.descriptions || []) {
+            descriptions.set(`${description.classid}_${description.instanceid || "0"}`, description);
+        }
+
+        let refined = 0;
+
+        for (const asset of data.assets || []) {
+            const key = `${asset.classid}_${asset.instanceid || "0"}`;
+            const description = descriptions.get(key);
+            const defIndex = Number(description?.descriptions?.find?.(d => d.type === "attribute" && /defindex/i.test(d.name || ""))?.value);
+
+            if (defIndex === REFINED_DEF_INDEX || Number(description?.market_hash_name === "Refined Metal")) {
+                refined += Number(asset.amount) || 1;
+            }
+        }
+
+        refined = Math.max(0, Math.min(STOCK_LIMIT, refined));
+
+        return res.json({
+            stock: refined,
+            refined,
+            limit: STOCK_LIMIT,
+            source: "steam_inventory",
+            configured: true,
+            steamId: stockSteamId
+        });
+    } catch (error) {
+        console.error("Steam stock lookup error:", error);
+        return res.status(502).json({
+            stock: 0,
+            refined: 0,
+            limit: STOCK_LIMIT,
+            source: "steam_inventory",
+            configured: true,
+            error: "Steam inventory unavailable"
+        });
+    }
 });
 
 app.post("/api/deposit/create", (req, res) => {
