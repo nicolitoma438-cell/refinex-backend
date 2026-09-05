@@ -45,16 +45,32 @@ app.get("/auth/steam", (req, res) => {
 app.get("/auth/steam/return", (req, res) => {
     const relyingParty = createRelyingParty();
 
-    relyingParty.verifyAssertion(req, (error, result) => {
+    relyingParty.verifyAssertion(req, async (error, result) => {
         if (error || !result?.authenticated || !result.claimedIdentifier) {
             console.error("Steam verification error:", error);
             return res.status(401).send("Steam Login failed");
         }
 
         const steamId = result.claimedIdentifier.split("/").pop();
+        let avatar = "";
+        let personaName = "Steam User";
+
+        try {
+            const response = await fetch(`https://steamcommunity.com/profiles/${steamId}?xml=1`);
+            const xml = await response.text();
+            const avatarMatch = xml.match(/<avatarFull><!\[CDATA\[(.*?)\]\]><\/avatarFull>/);
+            const nameMatch = xml.match(/<steamID><!\[CDATA\[(.*?)\]\]><\/steamID>/);
+            if (avatarMatch) avatar = avatarMatch[1];
+            if (nameMatch) personaName = nameMatch[1];
+        } catch (profileError) {
+            console.error("Steam profile lookup error:", profileError);
+        }
+
         const redirectUrl = new URL(FRONTEND_URL);
         redirectUrl.searchParams.set("steamId", steamId);
         redirectUrl.searchParams.set("login", "success");
+        redirectUrl.searchParams.set("avatar", avatar);
+        redirectUrl.searchParams.set("personaName", personaName);
 
         res.redirect(redirectUrl.toString());
     });
