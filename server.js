@@ -1,5 +1,7 @@
 import express from "express";
-import { RelyingParty } from "openid";
+import openid from "openid";
+
+const { RelyingParty } = openid;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
