@@ -43,7 +43,6 @@ app.get("/auth/steam", (req, res) => {
                 console.error("Steam authentication error:", error);
                 return res.status(500).send("Steam Login error");
             }
-
             res.redirect(authUrl);
         }
     );
@@ -87,19 +86,16 @@ app.get("/api/stock", async (req, res) => {
     const stockSteamId = String(process.env.STEAM_STOCK_ID || DEFAULT_STOCK_STEAM_ID).trim();
 
     if (!/^\d{5,20}$/.test(stockSteamId)) {
-        return res.json({
-            stock: 0,
-            refined: 0,
-            limit: STOCK_LIMIT,
-            source: "steam_inventory",
-            configured: false
-        });
+        return res.json({ stock: 0, refined: 0, limit: STOCK_LIMIT, source: "steam_inventory", configured: false });
     }
 
     try {
         const url = `https://steamcommunity.com/inventory/${stockSteamId}/${TF2_APP_ID}/${TF2_CONTEXT_ID}?l=english&count=5000`;
         const response = await fetch(url, {
-            headers: { "User-Agent": "Refinex.tf2 stock reader" }
+            headers: {
+                "User-Agent": "Mozilla/5.0 Refinex.tf2 stock reader",
+                "Accept": "application/json"
+            }
         });
 
         if (!response.ok) {
@@ -107,10 +103,14 @@ app.get("/api/stock", async (req, res) => {
         }
 
         const data = await response.json();
-        const descriptions = new Map();
+        if (Number(data.success) !== 1 && data.success !== true) {
+            throw new Error("Steam inventory returned success=0");
+        }
 
+        const descriptions = new Map();
         for (const description of data.descriptions || []) {
-            descriptions.set(`${description.classid}_${description.instanceid || "0"}`, description);
+            const key = `${description.classid}_${description.instanceid || "0"}`;
+            descriptions.set(key, description);
         }
 
         let refined = 0;
@@ -119,15 +119,11 @@ app.get("/api/stock", async (req, res) => {
             const key = `${asset.classid}_${asset.instanceid || "0"}`;
             const description = descriptions.get(key);
             const marketHashName = String(description?.market_hash_name || "").trim();
-            const name = String(description?.name || "").trim();
+            const itemName = String(description?.name || "").trim();
 
-            const attribute = (description?.descriptions || []).find(
-                item => item?.type === "attribute" && /defindex/i.test(String(item?.name || ""))
-            );
-            const defIndex = Number(attribute?.value);
-
-            if (defIndex === REFINED_DEF_INDEX || marketHashName === "Refined Metal" || name === "Refined Metal") {
-                refined += Number(asset.amount) || 1;
+            if (marketHashName === "Refined Metal" || itemName === "Refined Metal") {
+                const amount = Number.parseInt(String(asset.amount ?? "1"), 10);
+                refined += Number.isFinite(amount) && amount > 0 ? amount : 1;
             }
         }
 
@@ -189,20 +185,13 @@ app.get("/api/deposit/status", (req, res) => {
     const requestId = String(req.query?.requestId || "").trim();
 
     if (!requestId) {
-        return res.json({
-            status: "pending",
-            refined: 0,
-            message: "No deposit request ID supplied."
-        });
+        return res.json({ status: "pending", refined: 0, message: "No deposit request ID supplied." });
     }
 
     const request = deposits.get(requestId);
 
     if (!request) {
-        return res.status(404).json({
-            status: "not_found",
-            refined: 0
-        });
+        return res.status(404).json({ status: "not_found", refined: 0 });
     }
 
     res.json({
