@@ -11,16 +11,17 @@ const TF2_APP_ID = 440;
 const TF2_CONTEXT_ID = 2;
 const DEFAULT_STOCK_STEAM_ID = "76561199526105710";
 const DEFAULT_STOCK = 5;
-const STOCK_REFRESH_MS = 10 * 60 * 1000;
+const STOCK_REFRESH_MS = 60 * 1000;
 
+app.use(express.json());
 app.use((req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", FRONTEND_URL);
+    res.setHeader("Access-Control-Allow-Origin", "https://refinex-tf2.onrender.com");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") return res.sendStatus(204);
     next();
 });
-app.use(express.json());
+
 const deposits = new Map();
 let stockCache = { stock: DEFAULT_STOCK, refined: DEFAULT_STOCK, limit: STOCK_LIMIT, source: "manual_fallback" };
 let stockLastUpdated = 0;
@@ -92,9 +93,9 @@ async function fetchSteamStock() {
     return { stock: limited, refined: limited, limit: STOCK_LIMIT, source: "steam_inventory", steamId: stockSteamId, steamStatus: 200 };
 }
 
-async function refreshStock() {
+async function refreshStock(force = false) {
     const age = Date.now() - stockLastUpdated;
-    if (stockLastUpdated > 0 && age < STOCK_REFRESH_MS) return stockCache;
+    if (!force && age < STOCK_REFRESH_MS) return stockCache;
     if (stockRefreshPromise) return stockRefreshPromise;
     stockRefreshPromise = fetchSteamStock().then(result => {
         stockCache = result;
@@ -102,8 +103,8 @@ async function refreshStock() {
         return result;
     }).catch(error => {
         console.error("Steam stock refresh failed:", error.message);
-        stockLastUpdated = Date.now();
         stockCache = { ...stockCache, stale: true, refreshError: error.message, steamStatus: error.steamStatus || null };
+        stockLastUpdated = Date.now();
         return stockCache;
     }).finally(() => { stockRefreshPromise = null; });
     return stockRefreshPromise;
@@ -117,6 +118,11 @@ app.get("/api/stock", async (req, res) => {
 app.get("/api/stock/debug", async (req, res) => {
     const result = await refreshStock();
     res.json({ ok: true, ...result, lastUpdated: stockLastUpdated, nextRefreshInMs: Math.max(0, STOCK_REFRESH_MS - (Date.now() - stockLastUpdated)) });
+});
+
+app.post("/api/stock/refresh", async (req, res) => {
+    const result = await refreshStock(true);
+    res.json({ ok: true, ...result, lastUpdated: stockLastUpdated });
 });
 
 app.post("/api/deposit/create", (req, res) => {
