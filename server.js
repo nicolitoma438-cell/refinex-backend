@@ -7,6 +7,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const RETURN_URL = process.env.STEAM_RETURN_URL || "https://refinex-backend-7i0n.onrender.com/auth/steam/return";
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://refinex-tf2.onrender.com";
+const STOCK_LIMIT = 300;
 
 app.use(express.json());
 
@@ -73,6 +74,15 @@ app.get("/auth/steam/return", (req, res) => {
         redirectUrl.searchParams.set("personaName", personaName);
 
         res.redirect(redirectUrl.toString());
+    });
+});
+
+app.get("/api/stock", (req, res) => {
+    const refined = Math.max(0, Math.min(STOCK_LIMIT, Number(process.env.STOCK_REFINED) || 0));
+
+    res.json({
+        refined,
+        limit: STOCK_LIMIT
     });
 });
 
