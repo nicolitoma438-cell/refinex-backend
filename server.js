@@ -10,7 +10,6 @@ const FRONTEND_URL = process.env.FRONTEND_URL || "https://refinex-tf2.onrender.c
 const STOCK_LIMIT = 300;
 const TF2_APP_ID = 440;
 const TF2_CONTEXT_ID = 2;
-const REFINED_DEF_INDEX = 5000;
 const DEFAULT_STOCK_STEAM_ID = "76561199526105710";
 
 app.use(express.json());
@@ -83,7 +82,7 @@ app.get("/api/stock", async (req, res) => {
         const url = `https://steamcommunity.com/inventory/${stockSteamId}/${TF2_APP_ID}/${TF2_CONTEXT_ID}?l=english&count=5000`;
         const response = await fetch(url, {
             headers: {
-                "User-Agent": "Refinex.tf2 stock reader/1.0",
+                "User-Agent": "Refinex.tf2 stock reader/1.1",
                 "Accept": "application/json"
             }
         });
@@ -105,14 +104,18 @@ app.get("/api/stock", async (req, res) => {
         for (const asset of data.assets || []) {
             const key = `${asset.classid}_${asset.instanceid || "0"}`;
             const description = descriptions.get(key);
-            const marketHashName = String(description?.market_hash_name || "").trim();
-            const itemName = String(description?.name || "").trim();
-            const defIndex = String(description?.commodity || "") === "1" ? Number(description?.classid) : Number(description?.defindex ?? description?.item_definition_index);
+            if (!description) continue;
+
+            const marketHashName = String(description.market_hash_name || "").trim();
+            const itemName = String(description.name || "").trim();
+            const type = String(description.type || "").trim();
+            const tags = Array.isArray(description.tags) ? description.tags : [];
 
             const isRefined =
-                marketHashName === "Refined Metal" ||
-                itemName === "Refined Metal" ||
-                defIndex === REFINED_DEF_INDEX;
+                marketHashName.toLowerCase() === "refined metal" ||
+                itemName.toLowerCase() === "refined metal" ||
+                tags.some(tag => String(tag?.localized_tag_name || tag?.name || "").toLowerCase() === "refined metal") ||
+                `${marketHashName} ${itemName} ${type}`.toLowerCase().includes("refined metal");
 
             if (!isRefined) continue;
 
