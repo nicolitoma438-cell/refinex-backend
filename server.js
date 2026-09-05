@@ -11,6 +11,7 @@ const STOCK_LIMIT = 300;
 const TF2_APP_ID = 440;
 const TF2_CONTEXT_ID = 2;
 const REFINED_DEF_INDEX = 5000;
+const DEFAULT_STOCK_STEAM_ID = "76561199526105710";
 
 app.use(express.json());
 
@@ -83,7 +84,7 @@ app.get("/auth/steam/return", (req, res) => {
 });
 
 app.get("/api/stock", async (req, res) => {
-    const stockSteamId = String(process.env.STEAM_STOCK_ID || "").trim();
+    const stockSteamId = String(process.env.STEAM_STOCK_ID || DEFAULT_STOCK_STEAM_ID).trim();
 
     if (!/^\d{5,20}$/.test(stockSteamId)) {
         return res.json({
@@ -117,9 +118,15 @@ app.get("/api/stock", async (req, res) => {
         for (const asset of data.assets || []) {
             const key = `${asset.classid}_${asset.instanceid || "0"}`;
             const description = descriptions.get(key);
-            const defIndex = Number(description?.descriptions?.find?.(d => d.type === "attribute" && /defindex/i.test(d.name || ""))?.value);
+            const marketHashName = String(description?.market_hash_name || "").trim();
+            const name = String(description?.name || "").trim();
 
-            if (defIndex === REFINED_DEF_INDEX || Number(description?.market_hash_name === "Refined Metal")) {
+            const attribute = (description?.descriptions || []).find(
+                item => item?.type === "attribute" && /defindex/i.test(String(item?.name || ""))
+            );
+            const defIndex = Number(attribute?.value);
+
+            if (defIndex === REFINED_DEF_INDEX || marketHashName === "Refined Metal" || name === "Refined Metal") {
                 refined += Number(asset.amount) || 1;
             }
         }
