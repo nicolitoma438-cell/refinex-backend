@@ -6,7 +6,7 @@ const { RelyingParty } = openid;
 const app = express();
 const PORT = process.env.PORT || 3000;
 const RETURN_URL = process.env.STEAM_RETURN_URL || "https://refinex-backend-7i0n.onrender.com/auth/steam/return";
-const FRONTEND_URL = "https://refinex-tf2.onrender.com";
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://refinex-tf2.onrender.com";
 
 app.use(express.json());
 
@@ -52,8 +52,11 @@ app.get("/auth/steam/return", (req, res) => {
         }
 
         const steamId = result.claimedIdentifier.split("/").pop();
+        const redirectUrl = new URL(FRONTEND_URL);
+        redirectUrl.searchParams.set("steamId", steamId);
+        redirectUrl.searchParams.set("login", "success");
 
-        res.redirect(FRONTEND_URL);
+        res.redirect(redirectUrl.toString());
     });
 });
 
